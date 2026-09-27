@@ -10,6 +10,10 @@ import { hashPassword, checkPassword, passwordProblem } from './lib/password.js'
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
+/* Reported by /api/health, so "which build is live?" is one URL away when a
+   deploy looks like it did not take. */
+let APP_VERSION = 'unknown';
+try { APP_VERSION = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).version || APP_VERSION; } catch { /* keep 'unknown' */ }
 
 const PORT = Number(process.env.PORT) || 3000;
 const KEY_SECRET = process.env.KEY_SECRET;
@@ -1502,7 +1506,7 @@ const server = http.createServer(async (req, res) => {
 
   try {
     if (url.pathname === '/api/health') {
-      return sendJson(req, res, 200, { ok: true, service: 'papercub', time: new Date().toISOString() });
+      return sendJson(req, res, 200, { ok: true, service: 'papercub', version: APP_VERSION, time: new Date().toISOString() });
     }
     /* Public, and deliberately so: a Google client ID is not a secret, and the
        page needs it before it can draw the sign-in button. */
