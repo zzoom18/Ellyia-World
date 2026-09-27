@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { hashPassword, checkPassword, passwordProblem, MIN_PASSWORD, MAX_PASSWORD } from '../lib/password.js';
+import { hashPassword, checkPassword, passwordProblem, generatePassword, MIN_PASSWORD, MAX_PASSWORD } from '../lib/password.js';
 
 test('a hashed password checks against itself and nothing else', () => {
   const stored = hashPassword('correct horse');
@@ -35,4 +35,16 @@ test('a damaged or foreign record is a plain "no", not a crash', () => {
   assert.equal(checkPassword('anything', 'scrypt$zz$zz'), false);
   assert.equal(checkPassword('anything', 'scrypt$00ff$00ff'), false);
   assert.equal(checkPassword(null, hashPassword('validone')), false);
+});
+
+test('a generated password is readable, long enough and never the same twice', () => {
+  const seen = new Set();
+  for (let i = 0; i < 200; i++) {
+    const p = generatePassword();
+    assert.match(p, /^[A-HJ-NP-Za-hj-km-z2-9]{4}-[A-HJ-NP-Za-hj-km-z2-9]{4}$/);
+    assert.equal(passwordProblem(p), null);
+    assert.equal(checkPassword(p, hashPassword(p)), true);
+    seen.add(p);
+  }
+  assert.equal(seen.size, 200);
 });

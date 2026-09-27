@@ -156,6 +156,7 @@ check both fail.
 | `GET /api/health` | Liveness check (used by the Railway healthcheck). |
 | `POST /api/register` | `{ name, email, password?, child?, mode? }` → `{ token, licence, trialDays, hasPassword }`. Sign up or sign in. A new sign-up (`mode: "new"`) chooses a password; an account that has one must give it. Rate limited to 5/IP/day, wrong passwords to 12/IP/10min. |
 | `POST /api/password` | `{ token, current?, next }` → `{ hasPassword: true }`. Set a first password or change the existing one (`current` required when there is one). |
+| `POST /api/password/email` | `{ email, name?, child? }` → `{ sent: true }`. Emails a fresh password to the address (sign-up and forgot-password alike). Needs SMTP; one per address every two minutes. |
 | `POST /api/activate` | `{ key }` → `{ token, licence }`. Rate limited to 12/IP/10min. |
 | `POST /api/verify` | `{ token }` → `{ licence, expiresAt, hasPassword }`. |
 | `POST /api/admin/mint` | `{ count, tier, from }` → keys. Requires `ADMIN_TOKEN`. |
@@ -177,8 +178,13 @@ that email, open the profile sheet and choose **Set a password**.
 
 **Open access** is the switch that matters. With it on, everyone who registers gets the
 full app immediately — no trial, no key. Trials already sitting in someone's browser are
-upgraded the next time that browser checks in, so nobody has to sign up twice. Turn it
-off and new sign-ups go back to a `TRIAL_DAYS` trial followed by a licence key.
+upgraded the next time that browser checks in, so nobody has to sign up twice. It is off
+by default: a new account gets every game for `TRIAL_DAYS` (7) from its first sign-in,
+and when that runs out it drops to **limited** — the first game on each subject's path
+for the child's age, around ten in all — until it is unlocked by a payment or a grant.
+The clock runs from the first sign-in, not from each one, so signing out does not
+restart it, and an expired trial is swapped for the limited licence automatically on
+the next visit rather than signing the family out.
 
 **Personal grants** beat both: an email listed in the grants table always gets what it
 was granted, even with open access off. That is the tool for a refund, a reviewer or a
@@ -187,12 +193,25 @@ friend, and it is undone with one button.
 Settings and grants live in `settings.json` and `grants.json` under `DATA_DIR`, so they
 survive restarts and redeploys. The page also mints keys and lists sign-ups.
 
-**Passwords.** Every new sign-up chooses a password, and "I've played before" asks for
-it. Accounts from before passwords existed have none and still sign in by email alone
-until they set one from the profile sheet (which nudges them to). Hashes live in
-`passwords.json` under `DATA_DIR`, keyed by a hash of the address, never the password
-itself. There is no email-based reset: a parent who forgets asks you, and the
-**Clear password** button on the admin page lets them sign in by email and set a new one.
+**Passwords.** With `SMTP_HOST`, `SMTP_USER` and `SMTP_PASS` set (see below), nobody
+types a password to sign up: "I'm new here" emails one to the address, and typing it back
+is what proves the address is real. "I've played before" has a *Forgot your password?*
+link that emails a fresh one, and the profile sheet lets anyone change theirs. Without
+SMTP the sheet falls back to letting people choose a password on sign-up, and accounts
+from before passwords existed keep signing in by email alone until they set one. Hashes
+live in `passwords.json` under `DATA_DIR`, keyed by a hash of the address, never the
+password itself, next to the account's trial start. The **Clear password** button on the
+admin page drops a password without touching the trial clock.
+
+Email is sent over plain SMTP, no library. For a Hostinger mailbox:
+
+| Variable | Value |
+| --- | --- |
+| `SMTP_HOST` | `smtp.hostinger.com` |
+| `SMTP_PORT` | `465` (TLS; use `587` for STARTTLS) |
+| `SMTP_USER` | the mailbox, e.g. `hello@ellyia.sg` |
+| `SMTP_PASS` | its password |
+| `SMTP_FROM` | optional display form, e.g. `Fun Game <hello@ellyia.sg>` |
 
 Precedence, highest first: **personal grant → open access → trial**.
 

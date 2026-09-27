@@ -2120,6 +2120,7 @@
   }
   function starCost(id){ return starGates()[id] || 0; }
   function starLocked(w){
+    if(licence && licence.trial) return false; // the trial shows the whole app, no star ladder
     if(state.allUnlocked) return false;       // an admin cleared every star gate for this child
     if(played(w.id)) return false;            // never take back a game already met
     return (state.stars || 0) < starCost(w.id);
@@ -2429,7 +2430,24 @@
     {id:"duomemory",nm:"Memory Duel",   sub:"Take turns — most pairs wins",   emo:"🃏", bg:"linear-gradient(150deg,#C3F0A8,#5DC46B)", ages:"3–12", levels:["N","K1","K2","P1","P2","P3","P4","P5","P6"], sg:"Nursery – P6", free:false, cat:"duo", topic:"Take Turns"}
   ];
   function suitsAge(w){ return (w.levels || []).indexOf(schoolLevel()) >= 0; }
-  function unlocked(w){ return licence ? (licence.trial ? w.free : true) : false; }
+  /* The trial opens every game — a trial that hides most of the app is a
+     poor advert for it. When it runs out the account keeps a taste of each
+     subject: the first game on every subject's path for this child's age,
+     around ten in all, until the whole app is unlocked. */
+  var limitedCache = null, limitedLevel = null;
+  function limitedSet(){
+    var lvl = schoolLevel();
+    if(limitedCache && limitedLevel === lvl) return limitedCache;
+    limitedCache = {}; limitedLevel = lvl;
+    var visible = {};
+    WORLDS.filter(suitsAge).forEach(function(w){ visible[w.id] = true; });
+    SUBJECTS.forEach(function(sub){
+      var first = (JOURNEY[sub.k] || []).filter(function(id){ return visible[id]; })[0];
+      if(first) limitedCache[first] = true;
+    });
+    return limitedCache;
+  }
+  function unlocked(w){ return licence ? (licence.limited ? !!limitedSet()[w.id] : true) : false; }
 
   /* ---------- screens ---------- */
   /* The last game card that was opened, and how far down the list it sat.
@@ -2496,13 +2514,14 @@
     var pad = el("div",{"class":"pad"});
 
     if(licence){
-      var pill = el("div",{"class":"pill " + (licence.trial ? "trial" : "full")});
-      if(licence.trial){
+      var pill = el("div",{"class":"pill " + (licence.trial || licence.limited ? "trial" : "full")});
+      if(licence.trial || licence.limited){
         var d = licenceExp ? Math.max(0, Math.ceil((licenceExp*1000 - Date.now())/86400000)) : null;
-        pill.textContent = d === null ? "Sample games"
-          : d <= 0 ? "Sample ends today"
-          : d === 1 ? "Sample · 1 day left"
-          : "Sample · " + d + " days left";
+        pill.textContent = licence.limited ? "Free games"
+          : d === null ? "Free trial · every game open"
+          : d <= 0 ? "Free trial ends today"
+          : d === 1 ? "Free trial · 1 day left"
+          : "Free trial · " + d + " days left";
         var up = el("button",{"class":"linkbtn", id:"pc_upgrade", text:"About full access"});
         up.addEventListener("click", function(){ sfx.tap(); openKey(); });
         pad.appendChild(el("div",{style:"display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px"}, pill, up));
@@ -9935,16 +9954,16 @@
     });
   }
   function applyLicence(lic, exp, ads){
-    licence = {id:lic.id, name:lic.name, trial:!!lic.trial};
+    licence = {id:lic.id, name:lic.name, trial:!!lic.trial, limited:!!lic.limited};
     licenceExp = exp || null;
     if(ads) adsConfig = ads;
   }
 
   function openWelcome(ended){
     var box = el("div");
-    box.appendChild(el("h2",{"class":"display", text: ended ? "Your free trial has ended" : "Learning games, at your child's level"}));
+    box.appendChild(el("h2",{"class":"display", text: ended ? "Please sign in again" : "Learning games, at your child's level"}));
     box.appendChild(el("p",{text: ended
-      ? "Unlock every game with a one-time payment. Already paid? Just sign in below with the same email."
+      ? "Your sign-in has expired. Sign in below with the same email and everything you earned comes back."
       : "Maths, English, Science and thinking games that follow the Singapore syllabus — plus worksheets you can print."}));
 
     if(ended){
@@ -10013,7 +10032,20 @@
     fp.appendChild(pwNote);
     var pwBox = passwordInput("pc_reg_pw", "new-password");
     var pwI = pwBox.input;
-    fp.appendChild(pwBox.row); box.appendChild(fp);
+    fp.appendChild(pwBox.row);
+    /* With emailed passwords, "I've played before" also has the way back in
+       for anyone who has lost theirs. */
+    var forgot = el("button",{"class":"linkbtn", type:"button", style:"margin-top:8px; font-size:13.5px",
+      text:"Forgot your password? Email me a new one"});
+    forgot.hidden = true;
+    fp.appendChild(forgot);
+    box.appendChild(fp);
+    /* Where "we've emailed you" and similar good news goes — the .err line is
+       for problems. */
+    var sent = el("div",{"class":"fieldnote", style:"color:#FFD98A; margin:0 0 10px"});
+    sent.hidden = true;
+    box.appendChild(sent);
+    var emailSignup = false;
 
     var fc = el("div",{"class":"field"});
     fc.appendChild(el("label",{text:"Child's name", "for":"pc_reg_child"}));
@@ -10046,13 +10078,20 @@
       /* Signing back in needs the email and nothing else — the name and the
          child are already on the account. */
       fn.hidden = fc.hidden = (m === "back");
-      go.textContent = m === "back" ? "Sign in" : "Start playing";
+      /* With emailed passwords a new family types no password at all: the
+         button sends one to their inbox, and typing it back is the proof
+         that the address is theirs. */
+      fp.hidden = (m === "new" && emailSignup);
+      forgot.hidden = !(m === "back" && emailSignup);
+      go.textContent = m === "back" ? "Sign in" : (emailSignup ? "Email me my password" : "Start playing");
       mailNote.textContent = m === "back"
         ? "The address you used before. Everything you earned comes back."
-        : "We use this to save your stars so they follow you to any device.";
+        : (emailSignup
+          ? "We'll email your password to this address. Every game is open for " + (trialDaysCfg || 7) + " days."
+          : "We use this to save your stars so they follow you to any device.");
       pwLabel.textContent = m === "back" ? "Password" : "Choose a password";
       pwNote.textContent = m === "back"
-        ? "Leave this blank if you never set one — you can add it in your profile."
+        ? (emailSignup ? "The password we emailed you, or the one you changed it to." : "Leave this blank if you never set one — you can add it in your profile.")
         : "At least 6 characters. You'll use it to sign in on other devices.";
       pwI.setAttribute("autocomplete", m === "back" ? "current-password" : "new-password");
       err.textContent = "";
@@ -10060,6 +10099,33 @@
     }
     segNew.addEventListener("click", function(){ sfx.tap(); setMode("new"); });
     segBack.addEventListener("click", function(){ sfx.tap(); setMode("back"); });
+    var trialDaysCfg = 7;
+    loadConfig().then(function(cfg){
+      emailSignup = !!cfg.emailSignup;
+      if(cfg.trialDays) trialDaysCfg = cfg.trialDays;
+      setMode(mode);
+    });
+
+    /* Ask the server to email a password: used by "I'm new here" and by the
+       forgot link. Afterwards the sheet is ready for the password to be typed. */
+    function emailPassword(btn){
+      var email = (mailI.value||"").trim();
+      if(!email){ err.textContent = "We need your email address to send the password to."; mailI.focus(); return; }
+      btn.disabled = true; err.textContent = ""; sent.hidden = true;
+      api("/api/password/email", {email:email, name:(nameI.value||"").trim(), child:(kidI.value||"").trim()}).then(function(res){
+        if(res.status === 200 && res.body.ok){
+          setMode("back");
+          sent.textContent = "📬 We've emailed a password to " + email + ". Type it below — check the spam folder if it doesn't arrive in a minute.";
+          sent.hidden = false;
+          setTimeout(function(){ pwI.focus(); }, 60);
+          return;
+        }
+        err.textContent = res.body.message || "We couldn't send that email. Please try again.";
+      })["catch"](function(){
+        err.textContent = "Couldn't reach the server. Check your connection.";
+      }).then(function(){ btn.disabled = false; });
+    }
+    forgot.addEventListener("click", function(){ sfx.tap(); emailPassword(forgot); });
 
     box.appendChild(el("div",{"class":"byline", text:"Made by a dad in Singapore for his two children, Kayden and Ellyia."}));
 
@@ -10083,7 +10149,7 @@
       if(res.status === 200 && res.body.ok){
         setToken(res.body.token, rememberMe);
         accountHasPassword = !!res.body.hasPassword;
-        applyLicence(res.body.licence, Math.floor(Date.now()/1000) + (res.body.trialDays || 7) * 86400, res.body.ads);
+        applyLicence(res.body.licence, res.body.expiresAt || (Math.floor(Date.now()/1000) + (res.body.trialDays || 7) * 86400), res.body.ads);
         var kid = (kidI.value||"").trim();
         m.close();
         /* Signing in with an address that has played before brings back
@@ -10136,16 +10202,22 @@
          address twice keeps the request valid without asking for it again. */
       if(mode === "back" && !name) name = email.split("@")[0];
       if(!name){ err.textContent = "Please tell us your name."; nameI.focus(); return; }
+      if(mode === "new" && emailSignup){ emailPassword(go); return; }
       var password = pwI.value || "";
       if(mode === "new" && password.length < 6){
         err.textContent = "Please choose a password of at least 6 characters.";
         pwI.focus(); return;
       }
+      if(mode === "back" && emailSignup && !password){
+        err.textContent = "Type the password we emailed you — or ask for a new one below.";
+        pwI.focus(); return;
+      }
       go.disabled = true;
       go.textContent = mode === "back" ? "Signing in…" : "Setting up…";
-      err.textContent = "";
+      err.textContent = ""; sent.hidden = true;
       api("/api/register", {name:name, email:email, child:kid, password:password, mode:mode}).then(function(res){
-        if(!signedIn(res, "form") && res.body && (res.body.error === "wrong_password" || res.body.error === "password_required")){
+        if(!signedIn(res, "form") && res.body && (res.body.error === "wrong_password" || res.body.error === "password_required" || res.body.error === "no_password")){
+          if(res.body.error === "no_password" && emailSignup){ setMode("back"); forgot.hidden = false; }
           pwI.focus();
         }
       })["catch"](function(){
@@ -10493,7 +10565,9 @@
   function openKey(){
     var box = el("div");
     box.appendChild(el("h2",{"class":"display", text:"Unlock every game"}));
-    var copy = el("p",{text:"Your free trial covers the games marked free. Unlock the whole app with a one-time payment — it's applied to your account straight away."});
+    var copy = el("p",{text: licence && licence.limited
+      ? "Your free trial has ended, and a few games in each subject stay open. Unlock every game with a one-time payment — it's applied to your account straight away."
+      : "Your free trial opens every game while it lasts. Keep the whole app for good with a one-time payment — it's applied to your account straight away."});
     box.appendChild(copy);
     var pay = payButton(null);
     box.appendChild(pay);
@@ -10504,7 +10578,8 @@
     loadPayConfig().then(function(on){
       if(on) return;
       pay.hidden = true;
-      copy.textContent = "Full access is switched on for your account by whoever set it up — ask them, and it will be there next time you open the app.";
+      copy.textContent = (licence && licence.limited ? "Your free trial has ended, and a few games in each subject stay open. " : "")
+        + "Full access is switched on for your account by whoever runs this site — ask them, and it will be there next time you open the app.";
       ok.textContent = "Got it";
     });
     ok.addEventListener("click", function(){ m.close(); if(!licence) openWelcome(false); });
@@ -10529,10 +10604,20 @@
      can do with a finger closes the app. */
   /* Whether Google sign-in is available is the server's to say — it depends on
      a client ID being configured there. Asked for once, at boot. */
-  var googleClientId = null, googleReady = null;
+  var googleClientId = null, googleReady = null, configReady = null;
+  /* /api/config once per page: whether Google sign-in exists, and whether
+     passwords are emailed here rather than chosen on the sheet. */
+  function loadConfig(){
+    if(configReady) return configReady;
+    configReady = api("/api/config", null, "GET").then(function(res){
+      return (res.status === 200 && res.body.ok) ? res.body : {};
+    })["catch"](function(){ return {}; });
+    return configReady;
+  }
   function loadGoogle(){
     if(googleReady) return googleReady;
-    googleReady = api("/api/config", null, "GET").then(function(res){
+    googleReady = loadConfig().then(function(cfg){
+      var res = {status:200, body:cfg};
       if(!(res.status === 200 && res.body.ok && res.body.googleClientId)) return null;
       googleClientId = res.body.googleClientId;
       return new Promise(function(resolve){
@@ -10676,6 +10761,7 @@
           if(res.body.token){ setToken(res.body.token, rememberedHere()); }
           accountHasPassword = !!res.body.hasPassword;
           applyLicence(res.body.licence, res.body.expiresAt, res.body.ads);
+          if(res.body.trialEnded) setTimeout(function(){ banner("Your free trial has ended — a few games in each subject stay open."); }, 900);
           /* Draw only once the account's stars are in, or the home screen
              would show this device's total and then quietly change. */
           syncProgress(function(){

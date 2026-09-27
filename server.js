@@ -4,9 +4,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { verify, issueToken, readToken, mint, tierByName, TIERS, SELLABLE_TIERS, TRIAL_TIER } from './lib/keys.js';
+import { verify, issueToken, readToken, mint, tierByName, TIERS, SELLABLE_TIERS, TRIAL_TIER, LIMITED_TIER } from './lib/keys.js';
 import { verifyGoogleToken } from './lib/google.js';
-import { hashPassword, checkPassword, passwordProblem } from './lib/password.js';
+import { hashPassword, checkPassword, passwordProblem, generatePassword } from './lib/password.js';
+import { mailConfigured, sendMail } from './lib/mail.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -74,7 +75,10 @@ if (KEY_SECRET.length < 32) {
 /* ---------- settings and grants ----------
    Who gets what is a runtime decision, not a deploy-time one: the owner flips
    open access on or off from the admin page without touching the server. */
-let settings = { openAccess: true, defaultTier: 'full', adsEnabled: true, adsEveryRounds: 10 };
+/* openAccess off by default: a new account gets the TRIAL_DAYS trial with every
+   game, then drops to the free games until it is unlocked. Switch it on from
+   the admin page to hand everyone full access on sign-up instead. */
+let settings = { openAccess: false, defaultTier: 'full', adsEnabled: true, adsEveryRounds: 10 };
 let grants = {};   // email -> tier id, set per person from the admin page
 
 /* What every device is told about the ad break on sign-in/verify: whether it
@@ -91,11 +95,12 @@ function adsConfig() {
 // ever appear to anyone else. Nothing here is shown to another family until
 // its status is 'approved'.
 let writings = [];
-/* Account passwords, keyed by the same hash of the address the progress files
-   use, so this file does not read as a mailing list either. Values are scrypt
-   records from lib/password.js — never the password itself. An account with no
-   entry here signs in by email alone, as every account did before passwords
-   existed; the first password it sets closes that door. */
+/* Account records, keyed by the same hash of the address the progress files
+   use, so this file does not read as a mailing list either. Each holds the
+   scrypt password record from lib/password.js (never the password itself) and
+   `since`, the moment the address first signed in, which is when its trial
+   started. An account with no password signs in by email alone, as every
+   account did before passwords existed, unless email sign-up is configured. */
 let passwords = {};
 
 function loadStore(){
@@ -140,7 +145,95 @@ function entitlementFor(email) {
     try { return { tier: tierByName(settings.defaultTier), days: TOKEN_DAYS, reason: 'open' }; }
     catch { return { tier: 3, days: TOKEN_DAYS, reason: 'open' }; }
   }
-  return { tier: TRIAL_TIER, days: TRIAL_DAYS, reason: 'trial' };
+  /* The trial runs from the account's first sign-in, not from each sign-in,
+     so signing out and back in does not restart it. When it is over the
+     account keeps the free games rather than losing everything. */
+  const ends = trialEndsAt(email);
+  const now = Math.floor(Date.now() / 1000);
+  if (ends && ends <= now) return { tier: LIMITED_TIER, days: TOKEN_DAYS, reason: 'limited' };
+  const exp = ends || now + TRIAL_DAYS * 86400;
+  return { tier: TRIAL_TIER, days: Math.max(1, Math.ceil((exp - now) / 86400)), exp, reason: 'trial' };
+}
+
+/* ---------- emailed passwords ----------
+   With SMTP configured, nobody types a password to sign up: the address gets
+   one by email, and typing that back is what proves the address is real. The
+   same route is "forgot my password". One answer whatever the address, so the
+   form never says which emails have accounts. */
+const EMAIL_COOLDOWN_MS = 2 * 60 * 1000;
+const lastEmailed = new Map();  // account key -> last send time
+
+function passwordEmail(password, host) {
+  const site = PUBLIC_URL || (host ? `https://${host}` : '');
+  return {
+    subject: 'Your Fun Game password',
+    text: [
+      'Hello!',
+      '',
+      'Here is your password for Fun Game' + (site ? ` (${site})` : '') + ':',
+      '',
+      `    ${password}`,
+      '',
+      'Sign in with your email address and this password. You can change it any',
+      'time from your profile in the app.',
+      '',
+      `Every game is open to you for ${TRIAL_DAYS} days. After that a few games in each`,
+      'subject stay open, and the whole app can be unlocked for good.',
+      '',
+      'If you did not ask for this, you can ignore this email — nothing has changed',
+      'for anyone who did not receive it.'
+    ].join('\n')
+  };
+}
+
+async function handlePasswordEmail(req, res) {
+  if (!mailConfigured()) {
+    return sendJson(req, res, 503, { ok: false, error: 'mail_not_configured',
+      message: 'Emailed passwords are not set up on this site yet.' });
+  }
+  const ip = clientIp(req);
+  if (signupLimited(ip)) {
+    return sendJson(req, res, 429, { ok: false, error: 'too_many_signups',
+      message: 'That is a lot of sign-ups from one place. Get in touch and we will sort you out.' });
+  }
+  let body;
+  try { body = await readBody(req); } catch { return sendJson(req, res, 400, { ok: false, error: 'bad_request' }); }
+
+  const email = String(body.email || '').trim().slice(0, 254).toLowerCase();
+  if (!looksLikeEmail(email)) {
+    return sendJson(req, res, 400, { ok: false, error: 'email_invalid', message: 'That email address does not look right.' });
+  }
+  if (readProgress(email)?.banned) {
+    return sendJson(req, res, 403, { ok: false, error: 'banned', message: 'This account has been suspended.' });
+  }
+  const key = accountKey(email);
+  const last = lastEmailed.get(key) || 0;
+  if (Date.now() - last < EMAIL_COOLDOWN_MS) {
+    return sendJson(req, res, 429, { ok: false, error: 'too_soon',
+      message: 'A password was sent to that address a moment ago. Check your inbox and spam folder, then try again in a couple of minutes.' });
+  }
+
+  const password = generatePassword();
+  const extra = {};
+  const name = String(body.name || '').trim().slice(0, 60);
+  const child = String(body.child || '').trim().slice(0, 40);
+  if (name) extra.name = name;
+  if (child) extra.child = child;
+  try {
+    await sendMail({ to: email, ...passwordEmail(password, req.headers.host) });
+  } catch (err) {
+    console.error('[mail] could not send a password to', email + ':', err.message);
+    return sendJson(req, res, 502, { ok: false, error: 'mail_failed',
+      message: 'We could not send the email just now. Please try again in a moment.' });
+  }
+  if (!setPassword(email, password, extra)) {
+    return sendJson(req, res, 500, { ok: false, error: 'password_not_saved',
+      message: 'We could not save that password. Please try again in a moment.' });
+  }
+  lastEmailed.set(key, Date.now());
+  signups.set(ip, [...(signups.get(ip) || []), Date.now()]);
+  console.log(`[mail] password sent to ${email} ip=${ip}`);
+  return sendJson(req, res, 200, { ok: true, sent: true });
 }
 
 /* ---------- rate limiting ----------
@@ -355,6 +448,13 @@ async function handleRegister(req, res) {
   const password = typeof body.password === 'string' ? body.password : '';
   const stored = passwordOf(email);
   let passwordSet = false;
+  if (!stored && mailConfigured()) {
+    /* Passwords come by email here, so an account without one has not
+       proven its address yet; the page offers the "email me a password"
+       button on this error. */
+    return sendJson(req, res, 401, { ok: false, error: 'no_password',
+      message: 'This address has no password yet. Ask for one to be emailed to you first.' });
+  }
   if (stored) {
     if (rateLimited(ip)) {
       return sendJson(req, res, 429, { ok: false, error: 'too_many_attempts',
@@ -381,13 +481,14 @@ async function handleRegister(req, res) {
 
   signups.set(ip, [...(signups.get(ip) || []), Date.now()]);
 
+  const rec = markSignedIn(email);
   const ent = entitlementFor(email);
-  const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, email });
+  const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, exp: ent.exp, email });
   recordRegistration({
     at: new Date().toISOString(),
-    name,
+    name: (body.mode === 'back' && rec.name) ? rec.name : name,
     email: email.toLowerCase(),
-    child: String(body.child || '').trim().slice(0, 40) || null,
+    child: String(body.child || '').trim().slice(0, 40) || rec.child || null,
     ip,
     ua: String(req.headers['user-agent'] || '').slice(0, 200)
   });
@@ -399,7 +500,8 @@ async function handleRegister(req, res) {
     token,
     hasPassword: !!(stored || passwordSet),
     trialDays: ent.days,
-    licence: { id: licence.id, name: licence.name, maxPages: licence.maxPages, commercial: licence.commercial, trial: !!licence.trial },
+    expiresAt: ent.exp || null,
+    licence: licenceView(licence),
     ads: adsConfig()
   });
 }
@@ -450,21 +552,53 @@ function writeProgress(email, state) {
 function accountKey(email) {
   return crypto.createHash('sha256').update(`papercub-progress:${String(email || '').toLowerCase()}`).digest('hex').slice(0, 32);
 }
+function accountOf(email) { return passwords[accountKey(email)] || null; }
 function passwordOf(email) {
-  const rec = passwords[accountKey(email)];
+  const rec = accountOf(email);
   return rec && typeof rec.hash === 'string' ? rec.hash : null;
 }
 function hasPassword(email) { return !!passwordOf(email); }
-function setPassword(email, password) {
-  passwords[accountKey(email)] = { hash: hashPassword(password), updatedAt: Math.floor(Date.now() / 1000) };
+function setPassword(email, password, extra) {
+  const key = accountKey(email);
+  passwords[key] = { ...(passwords[key] || {}), ...(extra || {}), hash: hashPassword(password), updatedAt: Math.floor(Date.now() / 1000) };
   return persist(PASSWORDS_FILE, passwords);
 }
+/* Drops the password but keeps the record, so a cleared password does not
+   also hand the account a brand-new trial. */
 function clearPassword(email) {
+  const rec = accountOf(email);
+  if (!rec || !rec.hash) return false;
+  delete rec.hash;
+  persist(PASSWORDS_FILE, passwords);
+  return true;
+}
+function removeAccount(email) {
   const key = accountKey(email);
   if (!passwords[key]) return false;
   delete passwords[key];
   persist(PASSWORDS_FILE, passwords);
   return true;
+}
+/* First successful sign-in starts the clock. Called only once the address is
+   proven (the emailed password typed back, or Google), never when a password
+   is merely requested, so nobody can burn someone else's trial. */
+function markSignedIn(email) {
+  const key = accountKey(email);
+  const rec = passwords[key] || (passwords[key] = {});
+  if (!rec.since) {
+    rec.since = Math.floor(Date.now() / 1000);
+    persist(PASSWORDS_FILE, passwords);
+  }
+  return rec;
+}
+function trialEndsAt(email) {
+  const rec = accountOf(email);
+  const since = rec && Number(rec.since);
+  return since ? since + TRIAL_DAYS * 86400 : null;
+}
+/* One shape for every licence sent to the page. */
+function licenceView(l) {
+  return { id: l.id, name: l.name, maxPages: l.maxPages, commercial: l.commercial, trial: !!l.trial, limited: !!l.limited };
 }
 
 /* Only the fields the app actually keeps, with sane bounds. Whatever a browser
@@ -671,8 +805,9 @@ async function handleGoogle(req, res) {
 
   signups.set(ip, [...(signups.get(ip) || []), Date.now()]);
 
+  markSignedIn(email);
   const ent = entitlementFor(email);
-  const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, email });
+  const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, exp: ent.exp, email });
   recordRegistration({
     at: new Date().toISOString(),
     name,
@@ -692,7 +827,8 @@ async function handleGoogle(req, res) {
     email,
     hasPassword: hasPassword(email),
     trialDays: ent.days,
-    licence: { id: licence.id, name: licence.name, maxPages: licence.maxPages, commercial: licence.commercial, trial: !!licence.trial },
+    expiresAt: ent.exp || null,
+    licence: licenceView(licence),
     ads: adsConfig()
   });
 }
@@ -1009,7 +1145,7 @@ function deleteAccount(email) {
 
   let removedGrant = false;
   if (grants[target]) { delete grants[target]; removedGrant = true; persist(GRANTS_FILE, grants); }
-  const removedPassword = clearPassword(target);
+  const removedPassword = removeAccount(target);
 
   console.log(`[admin] deleted ${target} (${removedRows} sign-ups, progress=${removedProgress}, grant=${removedGrant}, password=${removedPassword})`);
   return { ok: true, removedRows, removedProgress, removedGrant, removedPassword };
@@ -1131,7 +1267,7 @@ async function handleActivate(req, res) {
   return sendJson(req, res, 200, {
     ok: true,
     token,
-    licence: { id: result.licence.id, name: result.licence.name, maxPages: result.licence.maxPages, commercial: result.licence.commercial, trial: !!result.licence.trial }
+    licence: licenceView(result.licence)
   });
 }
 
@@ -1143,16 +1279,53 @@ async function handleVerify(req, res) {
     return sendJson(req, res, 400, { ok: false, error: 'bad_request' });
   }
   const result = readToken(KEY_SECRET, body.token);
-  if (!result.ok) return sendJson(req, res, 401, { ok: false, error: result.reason });
   if (result.email && readProgress(result.email.toLowerCase())?.banned) {
     return sendJson(req, res, 403, { ok: false, error: 'banned', message: 'This account has been suspended.' });
   }
 
-  // Someone holding a trial from before open access was switched on — or who
-  // has just paid, or been given a personal grant — gets upgraded here rather
-  // than having to sign up again.
+  /* A trial that has run out is not the end of the account: the same signed
+     token still names the address, so it is swapped for whatever that account
+     is entitled to now (the free games, or more if it has been unlocked
+     meanwhile) without anyone signing in again. */
+  if (!result.ok && result.reason === 'expired' && result.email && accountOf(result.email)?.since) {
+    const email = String(result.email).toLowerCase();
+    const ent = entitlementFor(email);
+    const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, exp: ent.exp, email });
+    console.log(`[verify] ${email} trial over -> ${TIERS[ent.tier].id}`);
+    return sendJson(req, res, 200, {
+      ok: true, token, upgraded: true, trialEnded: ent.reason === 'limited',
+      hasPassword: hasPassword(email),
+      licence: licenceView(TIERS[ent.tier]),
+      expiresAt: ent.exp || null,
+      ads: adsConfig()
+    });
+  }
+  if (!result.ok) return sendJson(req, res, 401, { ok: false, error: result.reason });
+
+  /* A trial token whose account clock has run out (a token issued before
+     the trial start was recorded, say) is swapped the same way. */
+  if (result.licence.trial && result.email && !settings.openAccess) {
+    const email = String(result.email).toLowerCase();
+    const ends = trialEndsAt(email);
+    if (ends && ends <= Math.floor(Date.now() / 1000) && !grants[email]) {
+      const ent = entitlementFor(email);
+      const token = issueToken(KEY_SECRET, { tier: ent.tier, serial: 0, days: ent.days, exp: ent.exp, email });
+      console.log(`[verify] ${email} trial over -> ${TIERS[ent.tier].id}`);
+      return sendJson(req, res, 200, {
+        ok: true, token, upgraded: true, trialEnded: true,
+        hasPassword: hasPassword(email),
+        licence: licenceView(TIERS[ent.tier]),
+        expiresAt: ent.exp || null,
+        ads: adsConfig()
+      });
+    }
+  }
+
+  // Someone holding a trial or the free games from before open access was
+  // switched on — or who has just paid, or been given a personal grant — gets
+  // upgraded here rather than having to sign up again.
   const grantedNow = result.email ? grants[String(result.email).toLowerCase()] : null;
-  if (result.licence.trial && (settings.openAccess || grantedNow)) {
+  if ((result.licence.trial || result.licence.limited) && (settings.openAccess || grantedNow)) {
     let tier;
     try { tier = tierByName(grantedNow || settings.defaultTier); } catch { tier = 3; }
     const up = TIERS[tier];
@@ -1162,7 +1335,7 @@ async function handleVerify(req, res) {
       token,
       upgraded: true,
       hasPassword: !!result.email && hasPassword(result.email),
-      licence: { id: up.id, name: up.name, maxPages: up.maxPages, commercial: up.commercial, trial: false },
+      licence: licenceView(up),
       ads: adsConfig()
     });
   }
@@ -1170,7 +1343,7 @@ async function handleVerify(req, res) {
   return sendJson(req, res, 200, {
     ok: true,
     hasPassword: !!result.email && hasPassword(result.email),
-    licence: { id: result.licence.id, name: result.licence.name, maxPages: result.licence.maxPages, commercial: result.licence.commercial, trial: !!result.licence.trial },
+    licence: licenceView(result.licence),
     expiresAt: result.expiresAt,
     ads: adsConfig()
   });
@@ -1511,7 +1684,7 @@ const server = http.createServer(async (req, res) => {
     /* Public, and deliberately so: a Google client ID is not a secret, and the
        page needs it before it can draw the sign-in button. */
     if (url.pathname === '/api/config') {
-      return sendJson(req, res, 200, { ok: true, googleClientId: GOOGLE_CLIENT_ID || null });
+      return sendJson(req, res, 200, { ok: true, googleClientId: GOOGLE_CLIENT_ID || null, emailSignup: mailConfigured(), trialDays: TRIAL_DAYS });
     }
     if (url.pathname === '/api/register' && req.method === 'POST') return await handleRegister(req, res);
     if (url.pathname === '/api/google' && req.method === 'POST') return await handleGoogle(req, res);
@@ -1519,6 +1692,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/activate' && req.method === 'POST') return await handleActivate(req, res);
     if (url.pathname === '/api/verify' && req.method === 'POST') return await handleVerify(req, res);
     if (url.pathname === '/api/password' && req.method === 'POST') return await handlePassword(req, res);
+    if (url.pathname === '/api/password/email' && req.method === 'POST') return await handlePasswordEmail(req, res);
     if (url.pathname === '/api/pay/config' && req.method === 'GET') return await handlePayConfig(req, res);
     if (url.pathname === '/api/pay/checkout' && req.method === 'POST') return await handlePayCheckout(req, res);
     if (url.pathname === '/api/pay/webhook' && req.method === 'POST') return await handlePayWebhook(req, res);
@@ -1548,8 +1722,9 @@ server.listen(PORT, () => {
   console.log(`  admin mint endpoint: ${ADMIN_TOKEN ? 'enabled' : 'disabled (set ADMIN_TOKEN to enable)'}`);
   console.log(`  cross-origin activation: ${ALLOWED_ORIGINS.length ? ALLOWED_ORIGINS.join(', ') : 'same-origin only'}`);
   console.log(`  sample access: ${TRIAL_DAYS} days, registrations saved to ${REGISTRATIONS}`);
-  console.log(`  access: ${settings.openAccess ? 'OPEN — everyone gets ' + settings.defaultTier : 'trial then licence key'}`);
+  console.log(`  access: ${settings.openAccess ? 'OPEN — everyone gets ' + settings.defaultTier : TRIAL_DAYS + '-day trial of everything, then the free games'}`);
   console.log(`  Google sign-in: ${GOOGLE_CLIENT_ID ? 'enabled' : 'off (set GOOGLE_CLIENT_ID)'}`);
+  console.log(`  emailed passwords: ${mailConfigured() ? 'enabled via ' + process.env.SMTP_HOST : 'off (set SMTP_HOST, SMTP_USER, SMTP_PASS) — people choose a password on sign-up'}`);
   console.log(`  payments: ${paymentsEnabled() ? 'Stripe Checkout enabled' : 'off (set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID)'}`);
   console.log(`  admin page: /admin (sign in as ${ADMIN_EMAILS.join(', ')})`);
 

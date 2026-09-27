@@ -123,7 +123,7 @@ test('tier names map to numbers', () => {
   assert.equal(tierByName('personal'), 0);
   assert.equal(tierByName('STUDIO'), 3);
   assert.throws(() => tierByName('gold'), /Unknown tier/);
-  assert.equal(Object.keys(TIERS).length, 5); // 4 sold + the trial
+  assert.equal(Object.keys(TIERS).length, 6); // 4 sold + trial + limited
 });
 
 test('minting rejects out-of-range input', () => {
@@ -170,4 +170,17 @@ test('a trial token cannot be edited into a paid licence', () => {
   body.t = 3;
   const forged = Buffer.from(JSON.stringify(body)).toString('base64url') + '.' + token.split('.')[1];
   assert.equal(readToken(SECRET, forged).ok, false);
+});
+
+test('an expired token still names its account, and exp can be pinned', () => {
+  const past = Math.floor(Date.now() / 1000) - 10;
+  const tok = issueToken(SECRET, { tier: TRIAL_TIER, serial: 0, email: 'Mum@Example.com', exp: past });
+  const r = readToken(SECRET, tok);
+  assert.equal(r.ok, false);
+  assert.equal(r.reason, 'expired');
+  assert.equal(r.email, 'mum@example.com');
+  assert.equal(r.tier, TRIAL_TIER);
+  // A forged expired token names nobody.
+  const forged = tok.slice(0, -4) + 'AAAA';
+  assert.equal(readToken(SECRET, forged).email, undefined);
 });
