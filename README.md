@@ -167,8 +167,13 @@ Everything else is served from `public/`.
 
 ## The admin page
 
-`/admin` on the live site. Sign in with `ADMIN_TOKEN`; it is held in `sessionStorage`
-for that tab only and never written to disk in the browser.
+`/admin` on the live site. Sign in with the email and password of an admin account
+(`zzoom18@gmail.com` and `zzoom18@yahoo.com` are always admins; `ADMIN_EMAILS` adds
+more), the same password that account uses in the app. Google sign-in appears as well
+when `GOOGLE_CLIENT_ID` is set, and `ADMIN_TOKEN` remains a fallback. The session is
+held in `sessionStorage` for that tab only and never written to disk in the browser.
+An admin account with no password yet has to set one first: sign in to the game with
+that email, open the profile sheet and choose **Set a password**.
 
 **Open access** is the switch that matters. With it on, everyone who registers gets the
 full app immediately — no trial, no key. Trials already sitting in someone's browser are
@@ -258,8 +263,8 @@ the healthcheck at `/api/health`.
 | --- | --- |
 | `KEY_SECRET` | **Must be carried over unchanged.** Every licence key ever issued is signed with it; a new value invalidates all of them. |
 | `DATA_DIR` | `/data`, matching the volume mount. |
-| `ADMIN_TOKEN` | Fallback way into `/admin` if Google sign-in is misconfigured. |
-| `ADMIN_EMAILS` | Comma-separated. Defaults to `zzoom18@gmail.com`. |
+| `ADMIN_TOKEN` | Fallback way into `/admin` if password or Google sign-in is ever misconfigured. |
+| `ADMIN_EMAILS` | Comma-separated extra admins. `zzoom18@gmail.com` and `zzoom18@yahoo.com` are always included. |
 | `GOOGLE_CLIENT_ID` | From Google Cloud → Google Auth Platform → Clients. Without it the Google buttons stay hidden and the typed form is used. |
 | `TRIAL_DAYS`, `TOKEN_DAYS` | Optional; sensible defaults apply. |
 | `NODE_ENV` | `production`. |

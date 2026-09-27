@@ -106,11 +106,17 @@
 <div class="gate" id="gate">
   <div class="panel">
     <h2>Fun Game Admin</h2>
-    <p class="note">Sign in with the Google account that owns this site.</p>
-    <div id="gsi" style="display:flex; justify-content:center; min-height:44px; margin:18px 0 6px"></div>
+    <p class="note">Sign in with the email and password of an account that owns this site.</p>
+    <label for="adm_email" style="margin-top:14px">Email</label>
+    <input id="adm_email" type="email" autocomplete="username" spellcheck="false">
+    <label for="adm_pw" style="margin-top:12px">Password</label>
+    <input id="adm_pw" type="password" autocomplete="current-password" spellcheck="false">
+    <button class="btn btn-go" id="pwGo" style="width:100%; margin-top:14px">Sign in</button>
+    <div id="gsi" style="display:flex; justify-content:center; min-height:0; margin:14px 0 0"></div>
     <div class="msg bad" id="gateMsg"></div>
-    <!-- The token is still accepted, and is the way back in if Google sign-in
-         is ever misconfigured. It stays out of the way until it is needed. -->
+    <!-- The token is still accepted, and is the way back in if the password
+         or Google sign-in is ever misconfigured. It stays out of the way until
+         it is needed. -->
     <details id="tokfall" style="margin-top:20px">
       <summary style="cursor:pointer; color:#8E88C4; font-weight:700; font-size:14px">Use an admin token instead</summary>
       <label for="tok" style="margin-top:12px">Admin token</label>
@@ -256,9 +262,8 @@
   function startGoogleGate(){
     fetch("/api/config").then(function(r){ return r.json(); }).then(function(cfg){
       if(!(cfg && cfg.ok && cfg.googleClientId)){
-        /* No client id configured: the token is the only way in, so open it. */
-        $("tokfall").open = true;
-        $("gsi").innerHTML = '<div class="note">Google sign-in is not configured yet.</div>';
+        /* No client id configured: email and password is the way in, and
+           the Google button simply does not appear. */
         return;
       }
       var sc = document.createElement("script");
@@ -283,16 +288,31 @@
           google.accounts.id.renderButton($("gsi"), {
             theme:"filled_blue", size:"large", shape:"pill", text:"signin_with", width:300
           });
-        }catch(e){ $("tokfall").open = true; }
+        }catch(e){ /* the password form is still there */ }
       };
-      sc.onerror = function(){
-        $("tokfall").open = true;
-        $("gsi").innerHTML = '<div class="note">Could not load Google sign-in.</div>';
-      };
+      sc.onerror = function(){ /* the password form is still there */ };
       document.head.appendChild(sc);
-    })["catch"](function(){ $("tokfall").open = true; });
+    })["catch"](function(){ /* the password form is still there */ });
   }
   startGoogleGate();
+
+  /* ---------- email + password sign-in ---------- */
+  $("pwGo").addEventListener("click", function(){
+    var email = ($("adm_email").value || "").trim(), password = $("adm_pw").value || "";
+    if(!email || !password){ say($("gateMsg"), "Enter your email and password.", false); return; }
+    $("pwGo").disabled = true;
+    fetch("/api/admin/login", {
+      method:"POST", headers:{"content-type":"application/json"},
+      body: JSON.stringify({email:email, password:password})
+    }).then(function(r){ return r.json().then(function(j){ return {status:r.status, body:j}; }); })
+      .then(function(res){
+        if(res.status === 200 && res.body.ok) return signIn(res.body.token);
+        say($("gateMsg"), res.body.message || "That sign-in was not accepted.", false);
+      })["catch"](function(){ say($("gateMsg"), "Could not reach the server.", false); })
+      .then(function(){ $("pwGo").disabled = false; });
+  });
+  $("adm_pw").addEventListener("keydown", function(e){ if(e.key === "Enter") $("pwGo").click(); });
+  $("adm_email").addEventListener("keydown", function(e){ if(e.key === "Enter") $("adm_pw").focus(); });
 
   $("gateGo").addEventListener("click", function(){
     var v = ($("tok").value || "").trim();

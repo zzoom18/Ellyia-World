@@ -1347,12 +1347,18 @@ async function handlePayWebhook(req, res) {
   return sendJson(req, res, 200, { ok: true, received: true });
 }
 
-/* Who may open /admin. Signing in with one of these Google accounts is the
-   normal way in; the long ADMIN_TOKEN still works as a way back in if Google
+/* Who may open /admin. An admin signs in with their own account email and
+   password (the same password they use in the app), or with Google when it
+   is configured; the long ADMIN_TOKEN still works as a way back in if either
    is ever misconfigured, which would otherwise lock the owner out of his own
-   site. */
-const ADMIN_EMAILS = (process.env.ADMIN_EMAILS || 'zzoom18@gmail.com')
-  .split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+   site. The owner's addresses are always on the list, whatever ADMIN_EMAILS
+   says, so a deployment with the variable set to one of them cannot quietly
+   drop the other. */
+const OWNER_EMAILS = ['zzoom18@gmail.com', 'zzoom18@yahoo.com'];
+const ADMIN_EMAILS = [...new Set([
+  ...OWNER_EMAILS,
+  ...(process.env.ADMIN_EMAILS || '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean)
+])];
 const ADMIN_SESSION_HOURS = 12;
 
 function sameString(a, b) {
@@ -1400,34 +1406,57 @@ function requireAdmin(req, res) {
   return false;
 }
 
-/* Sign in to the admin page with Google. The ID token is verified exactly as a
-   parent's is; the only extra step is checking the address is on the list. */
+/* Sign in to the admin page: with the account's own email and password, or
+   with Google. A Google ID token is verified exactly as a parent's is; a
+   password is checked exactly as it is on the sign-in sheet. Either way the
+   only extra step is checking the address is on the list. */
 async function handleAdminLogin(req, res) {
-  if (!GOOGLE_CLIENT_ID) {
-    return sendJson(req, res, 503, {
-      ok: false, error: 'google_not_configured',
-      message: 'Google sign-in is not set up yet. Use the admin token for now.'
-    });
-  }
-
   let body;
   try { body = await readBody(req); } catch { return sendJson(req, res, 400, { ok: false, error: 'bad_request' }); }
 
-  let claims;
-  try {
-    claims = verifyGoogleToken(body.credential, { keys: await googleKeys(), clientId: GOOGLE_CLIENT_ID });
-  } catch (err) {
-    console.error('[admin] rejected a Google sign-in:', err.message);
-    return sendJson(req, res, 401, { ok: false, error: 'google_rejected', message: 'Google could not confirm that sign-in.' });
-  }
-
-  const email = String(claims.email).toLowerCase();
-  if (ADMIN_EMAILS.indexOf(email) < 0) {
-    console.error(`[admin] ${email} is not on the admin list`);
-    return sendJson(req, res, 403, {
-      ok: false, error: 'not_an_admin',
-      message: 'That account is not an administrator of this site.'
-    });
+  let email;
+  if (body.credential) {
+    if (!GOOGLE_CLIENT_ID) {
+      return sendJson(req, res, 503, {
+        ok: false, error: 'google_not_configured',
+        message: 'Google sign-in is not set up yet. Sign in with your email and password instead.'
+      });
+    }
+    let claims;
+    try {
+      claims = verifyGoogleToken(body.credential, { keys: await googleKeys(), clientId: GOOGLE_CLIENT_ID });
+    } catch (err) {
+      console.error('[admin] rejected a Google sign-in:', err.message);
+      return sendJson(req, res, 401, { ok: false, error: 'google_rejected', message: 'Google could not confirm that sign-in.' });
+    }
+    email = String(claims.email).toLowerCase();
+    if (ADMIN_EMAILS.indexOf(email) < 0) {
+      console.error(`[admin] ${email} is not on the admin list`);
+      return sendJson(req, res, 403, { ok: false, error: 'not_an_admin', message: 'That account is not an administrator of this site.' });
+    }
+  } else {
+    email = String(body.email || '').trim().toLowerCase();
+    const password = typeof body.password === 'string' ? body.password : '';
+    const ip = clientIp(req);
+    if (rateLimited(ip)) {
+      return sendJson(req, res, 429, { ok: false, error: 'too_many_attempts',
+        message: 'Too many tries. Please wait ten minutes and try again.' });
+    }
+    if (!email || !password) {
+      return sendJson(req, res, 400, { ok: false, error: 'missing', message: 'Enter your email and password.' });
+    }
+    /* One answer for "not an admin" and "wrong password", so the form does
+       not confirm which addresses are on the list. */
+    const stored = ADMIN_EMAILS.indexOf(email) >= 0 ? passwordOf(email) : null;
+    if (ADMIN_EMAILS.indexOf(email) >= 0 && !stored) {
+      return sendJson(req, res, 403, { ok: false, error: 'no_password',
+        message: 'This account has no password yet. Sign in to the game with it, open your profile and set one, then come back.' });
+    }
+    if (!stored || !checkPassword(password, stored)) {
+      recordAttempt(ip);
+      console.error(`[admin] rejected a password sign-in for ${email} ip=${ip}`);
+      return sendJson(req, res, 401, { ok: false, error: 'rejected', message: 'That email and password were not accepted.' });
+    }
   }
 
   console.log(`[admin] signed in as ${email}`);
