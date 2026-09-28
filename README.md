@@ -180,11 +180,11 @@ that email, open the profile sheet and choose **Set a password**.
 full app immediately — no trial, no key. Trials already sitting in someone's browser are
 upgraded the next time that browser checks in, so nobody has to sign up twice. It is off
 by default: a new account gets every game for `TRIAL_DAYS` (7) from its first sign-in,
-and when that runs out it drops to **limited** — the first game on each subject's path
-for the child's age, around ten in all — until it is unlocked by a payment or a grant.
-The clock runs from the first sign-in, not from each one, so signing out does not
-restart it, and an expired trial is swapped for the limited licence automatically on
-the next visit rather than signing the family out.
+and when that runs out it holds a **trial-ended** licence — still signed in, stars kept,
+but every card locked and the pay sheet shown — until it is unlocked by a Stripe payment
+or a grant from the admin page. The clock runs from the first sign-in, not from each
+one, so signing out does not restart it, and an expired trial is swapped for the
+trial-ended licence automatically on the next visit rather than signing the family out.
 
 **Personal grants** beat both: an email listed in the grants table always gets what it
 was granted, even with open access off. That is the tool for a refund, a reviewer or a

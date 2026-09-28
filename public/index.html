@@ -2431,23 +2431,9 @@
   ];
   function suitsAge(w){ return (w.levels || []).indexOf(schoolLevel()) >= 0; }
   /* The trial opens every game — a trial that hides most of the app is a
-     poor advert for it. When it runs out the account keeps a taste of each
-     subject: the first game on every subject's path for this child's age,
-     around ten in all, until the whole app is unlocked. */
-  var limitedCache = null, limitedLevel = null;
-  function limitedSet(){
-    var lvl = schoolLevel();
-    if(limitedCache && limitedLevel === lvl) return limitedCache;
-    limitedCache = {}; limitedLevel = lvl;
-    var visible = {};
-    WORLDS.filter(suitsAge).forEach(function(w){ visible[w.id] = true; });
-    SUBJECTS.forEach(function(sub){
-      var first = (JOURNEY[sub.k] || []).filter(function(id){ return visible[id]; })[0];
-      if(first) limitedCache[first] = true;
-    });
-    return limitedCache;
-  }
-  function unlocked(w){ return licence ? (licence.limited ? !!limitedSet()[w.id] : true) : false; }
+     poor advert for it. When it runs out every card locks until the account
+     is unlocked with a payment (or a grant from the admin page). */
+  function unlocked(w){ return !!licence && !licence.limited; }
 
   /* ---------- screens ---------- */
   /* The last game card that was opened, and how far down the list it sat.
@@ -2517,12 +2503,12 @@
       var pill = el("div",{"class":"pill " + (licence.trial || licence.limited ? "trial" : "full")});
       if(licence.trial || licence.limited){
         var d = licenceExp ? Math.max(0, Math.ceil((licenceExp*1000 - Date.now())/86400000)) : null;
-        pill.textContent = licence.limited ? "Free games"
+        pill.textContent = licence.limited ? "Free trial ended"
           : d === null ? "Free trial · every game open"
           : d <= 0 ? "Free trial ends today"
           : d === 1 ? "Free trial · 1 day left"
           : "Free trial · " + d + " days left";
-        var up = el("button",{"class":"linkbtn", id:"pc_upgrade", text:"About full access"});
+        var up = el("button",{"class":"linkbtn", id:"pc_upgrade", text: licence.limited ? "Unlock every game" : "About full access"});
         up.addEventListener("click", function(){ sfx.tap(); openKey(); });
         pad.appendChild(el("div",{style:"display:flex; align-items:center; flex-wrap:wrap; gap:12px; margin-bottom:8px"}, pill, up));
       } else {
@@ -10159,6 +10145,7 @@
           save();
           renderHome();
           if(!state.setup) openProfile();
+          else if(licence && licence.limited) setTimeout(openKey, 700);
           if(state.stars > 0) banner("Welcome back — ⭐ " + state.stars + " restored");
         });
         return true;
@@ -10566,7 +10553,7 @@
     var box = el("div");
     box.appendChild(el("h2",{"class":"display", text:"Unlock every game"}));
     var copy = el("p",{text: licence && licence.limited
-      ? "Your free trial has ended, and a few games in each subject stay open. Unlock every game with a one-time payment — it's applied to your account straight away."
+      ? "Your free trial has ended. Unlock every game with a one-time payment — it's applied to your account straight away, and your stars are all still here."
       : "Your free trial opens every game while it lasts. Keep the whole app for good with a one-time payment — it's applied to your account straight away."});
     box.appendChild(copy);
     var pay = payButton(null);
@@ -10578,7 +10565,7 @@
     loadPayConfig().then(function(on){
       if(on) return;
       pay.hidden = true;
-      copy.textContent = (licence && licence.limited ? "Your free trial has ended, and a few games in each subject stay open. " : "")
+      copy.textContent = (licence && licence.limited ? "Your free trial has ended. " : "")
         + "Full access is switched on for your account by whoever runs this site — ask them, and it will be there next time you open the app.";
       ok.textContent = "Got it";
     });
@@ -10761,12 +10748,13 @@
           if(res.body.token){ setToken(res.body.token, rememberedHere()); }
           accountHasPassword = !!res.body.hasPassword;
           applyLicence(res.body.licence, res.body.expiresAt, res.body.ads);
-          if(res.body.trialEnded) setTimeout(function(){ banner("Your free trial has ended — a few games in each subject stay open."); }, 900);
+          if(res.body.trialEnded) setTimeout(function(){ banner("Your free trial has ended — unlock every game to keep playing."); }, 900);
           /* Draw only once the account's stars are in, or the home screen
              would show this device's total and then quietly change. */
           syncProgress(function(){
             renderHome();
             if(!state.setup) openProfile();
+            else if(licence && licence.limited) setTimeout(openKey, 700);
           });
         } else {
           clearToken();

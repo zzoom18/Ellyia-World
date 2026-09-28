@@ -177,8 +177,8 @@ function passwordEmail(password, host) {
       'Sign in with your email address and this password. You can change it any',
       'time from your profile in the app.',
       '',
-      `Every game is open to you for ${TRIAL_DAYS} days. After that a few games in each`,
-      'subject stay open, and the whole app can be unlocked for good.',
+      `Every game is open to you for ${TRIAL_DAYS} days. After that, a one-time payment`,
+      'unlocks every game for good — your stars and progress are kept either way.',
       '',
       'If you did not ask for this, you can ignore this email — nothing has changed',
       'for anyone who did not receive it.'
