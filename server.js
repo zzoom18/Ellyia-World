@@ -226,6 +226,7 @@ async function handlePasswordEmail(req, res) {
     return sendJson(req, res, 502, { ok: false, error: 'mail_failed',
       message: 'We could not send the email just now. Please try again in a moment.' });
   }
+  extra.temp = true;
   if (!setPassword(email, password, extra)) {
     return sendJson(req, res, 500, { ok: false, error: 'password_not_saved',
       message: 'We could not save that password. Please try again in a moment.' });
@@ -498,7 +499,7 @@ async function handleRegister(req, res) {
   return sendJson(req, res, 200, {
     ok: true,
     token,
-    hasPassword: !!(stored || passwordSet),
+    ...passwordFlags(email),
     trialDays: ent.days,
     expiresAt: ent.exp || null,
     licence: licenceView(licence),
@@ -558,6 +559,15 @@ function passwordOf(email) {
   return rec && typeof rec.hash === 'string' ? rec.hash : null;
 }
 function hasPassword(email) { return !!passwordOf(email); }
+/* An emailed password is temporary: the app asks for a chosen one on the
+   first sign-in, and keeps asking until it has been changed. */
+function mustChangePassword(email) {
+  const rec = accountOf(email);
+  return !!(rec && rec.hash && rec.temp);
+}
+function passwordFlags(email) {
+  return { hasPassword: hasPassword(email), mustChangePassword: mustChangePassword(email) };
+}
 function setPassword(email, password, extra) {
   const key = accountKey(email);
   passwords[key] = { ...(passwords[key] || {}), ...(extra || {}), hash: hashPassword(password), updatedAt: Math.floor(Date.now() / 1000) };
@@ -722,7 +732,7 @@ async function handleProgress(req, res) {
   const stored = readProgress(result.email);
 
   if (req.method === 'GET' || !body.state) {
-    return sendJson(req, res, 200, { ok: true, state: stored, email: result.email, hasPassword: hasPassword(result.email) });
+    return sendJson(req, res, 200, { ok: true, state: stored, email: result.email, ...passwordFlags(result.email) });
   }
 
   const incoming = cleanProgress(body.state);
@@ -732,7 +742,7 @@ async function handleProgress(req, res) {
   const saved = writeProgress(result.email, merged);
   // The page shows "signed in as", so it needs the address back on every
   // reply, not only on the read-only branch.
-  return sendJson(req, res, 200, { ok: true, saved, state: merged, email: result.email, hasPassword: hasPassword(result.email) });
+  return sendJson(req, res, 200, { ok: true, saved, state: merged, email: result.email, ...passwordFlags(result.email) });
 }
 
 /* ---------- Sign in with Google ----------
@@ -825,7 +835,7 @@ async function handleGoogle(req, res) {
     token,
     name,
     email,
-    hasPassword: hasPassword(email),
+    ...passwordFlags(email),
     trialDays: ent.days,
     expiresAt: ent.exp || null,
     licence: licenceView(licence),
@@ -1319,7 +1329,7 @@ async function handleVerify(req, res) {
     console.log(`[verify] ${email} trial over -> ${TIERS[ent.tier].id}`);
     return sendJson(req, res, 200, {
       ok: true, token, upgraded: true, trialEnded: ent.reason === 'limited',
-      hasPassword: hasPassword(email),
+      ...passwordFlags(email),
       licence: licenceView(TIERS[ent.tier]),
       expiresAt: ent.exp || null,
       ads: adsConfig()
@@ -1338,7 +1348,7 @@ async function handleVerify(req, res) {
       console.log(`[verify] ${email} trial over -> ${TIERS[ent.tier].id}`);
       return sendJson(req, res, 200, {
         ok: true, token, upgraded: true, trialEnded: true,
-        hasPassword: hasPassword(email),
+        ...passwordFlags(email),
         licence: licenceView(TIERS[ent.tier]),
         expiresAt: ent.exp || null,
         ads: adsConfig()
@@ -1359,7 +1369,7 @@ async function handleVerify(req, res) {
       ok: true,
       token,
       upgraded: true,
-      hasPassword: !!result.email && hasPassword(result.email),
+      ...(result.email ? passwordFlags(result.email) : { hasPassword: false, mustChangePassword: false }),
       licence: licenceView(up),
       ads: adsConfig()
     });
@@ -1367,7 +1377,7 @@ async function handleVerify(req, res) {
 
   return sendJson(req, res, 200, {
     ok: true,
-    hasPassword: !!result.email && hasPassword(result.email),
+    ...(result.email ? passwordFlags(result.email) : { hasPassword: false, mustChangePassword: false }),
     licence: licenceView(result.licence),
     expiresAt: result.expiresAt,
     ads: adsConfig()
@@ -1394,7 +1404,9 @@ async function handlePassword(req, res) {
 
   const ip = clientIp(req);
   const stored = passwordOf(email);
-  if (stored) {
+  /* The emailed password was typed moments ago to get this token, so the
+     first change does not ask for it again. */
+  if (stored && !mustChangePassword(email)) {
     if (rateLimited(ip)) {
       return sendJson(req, res, 429, { ok: false, error: 'too_many_attempts',
         message: 'Too many tries. Please wait ten minutes and try again.' });
@@ -1409,12 +1421,12 @@ async function handlePassword(req, res) {
   const next = typeof body.next === 'string' ? body.next : '';
   const problem = passwordProblem(next);
   if (problem) return sendJson(req, res, 400, { ok: false, error: 'password_invalid', message: problem });
-  if (!setPassword(email, next)) {
+  if (!setPassword(email, next, { temp: false })) {
     return sendJson(req, res, 500, { ok: false, error: 'password_not_saved',
       message: 'We could not save that password. Please try again in a moment.' });
   }
   console.log(`[password] ${stored ? 'changed' : 'set'} for ${email} ip=${ip}`);
-  return sendJson(req, res, 200, { ok: true, hasPassword: true });
+  return sendJson(req, res, 200, { ok: true, hasPassword: true, mustChangePassword: false });
 }
 
 /* ---------- payments (Stripe Checkout) ----------

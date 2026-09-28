@@ -1862,6 +1862,8 @@
   /* Whether the signed-in account has a password yet. Accounts from before
      passwords existed have none; the profile sheet nudges them to set one. */
   var accountHasPassword = false;
+  /* True while the account is still on the password we emailed it. */
+  var mustChangePassword = false;
   /* Sentences other players' children have written and had approved,
      fetched once at boot and refreshed quietly each time the home screen is
      shown, so a newly-approved one appears without anyone reloading the
@@ -1909,7 +1911,7 @@
     clearToken();
     try{ localStorage.removeItem("papercub.player"); }catch(e){}
     try{ localStorage.removeItem("papercub.noinstall"); }catch(e){}
-    accountEmail = null; accountHasPassword = false;
+    accountEmail = null; accountHasPassword = false; mustChangePassword = false;
     licence = null; licenceExp = null;
     state = JSON.parse(JSON.stringify(DEFAULT));
     location.reload();
@@ -1948,6 +1950,7 @@
       if(res.status === 200 && res.body.ok){
         accountEmail = res.body.email || null;
         accountHasPassword = !!res.body.hasPassword;
+        mustChangePassword = !!res.body.mustChangePassword;
       }
       if(res.status === 200 && res.body.ok && res.body.state){
         var incoming = res.body.state;
@@ -9595,17 +9598,22 @@
   /* Set a first password, or change the one the account has. Signed-in
      only: the token says which account, and the current password (when
      there is one) says it is really them. */
-  function openPassword(){
+  function openPassword(opts){
+    opts = opts || {};
+    var first = !!opts.first;   // still on the emailed password: choose one now
     var token = getToken();
-    if(!token || !accountEmail){ banner("Sign in with your email first."); return; }
+    if(!token || !accountEmail){ banner("Sign in with your email first."); if(opts.then) opts.then(); return; }
     var box = el("div");
-    box.appendChild(el("h2",{"class":"display", text: accountHasPassword ? "Change password" : "Set a password"}));
-    box.appendChild(el("p",{text: accountHasPassword
+    box.appendChild(el("h2",{"class":"display", text: first ? "Choose your own password"
+      : accountHasPassword ? "Change password" : "Set a password"}));
+    box.appendChild(el("p",{text: first
+      ? "You signed in with the password we emailed you. Pick one you'll remember — it's what you'll use on any device."
+      : accountHasPassword
       ? "Type your current password, then the new one twice."
       : "With a password, only you can sign in as " + accountEmail + " on another device."}));
 
     var curI = null;
-    if(accountHasPassword){
+    if(accountHasPassword && !first){
       var fcur = el("div",{"class":"field"});
       fcur.appendChild(el("label",{text:"Current password", "for":"pc_pw_cur"}));
       var cur = passwordInput("pc_pw_cur", "current-password");
@@ -9627,8 +9635,8 @@
     var err = el("div",{"class":"err"}); box.appendChild(err);
     var m = modal(box);
     var go = el("button",{"class":"btn btn-lg btn-go", style:"width:100%; margin-top:8px", text:"Save password"});
-    var back = el("button",{"class":"btn btn-lg btn-ghost", style:"width:100%; margin-top:10px", text:"Cancel"});
-    back.addEventListener("click", function(){ m.close(); });
+    var back = el("button",{"class":"btn btn-lg btn-ghost", style:"width:100%; margin-top:10px", text: first ? "Later" : "Cancel"});
+    back.addEventListener("click", function(){ m.close(); if(opts.then) opts.then(); });
     go.addEventListener("click", function(){
       var next = nw.input.value || "", rep = again.input.value || "";
       if(curI && !curI.value){ err.textContent = "Please type your current password."; curI.focus(); return; }
@@ -9637,9 +9645,10 @@
       go.disabled = true; go.textContent = "Saving…"; err.textContent = "";
       api("/api/password", {token:token, current: curI ? curI.value : "", next:next}).then(function(res){
         if(res.status === 200 && res.body.ok){
-          accountHasPassword = true;
+          accountHasPassword = true; mustChangePassword = false;
           m.close();
           banner("🔒 Password saved");
+          if(opts.then) opts.then();
           return;
         }
         err.textContent = res.body.message || "Something went wrong. Please try again.";
@@ -10135,6 +10144,7 @@
       if(res.status === 200 && res.body.ok){
         setToken(res.body.token, rememberMe);
         accountHasPassword = !!res.body.hasPassword;
+        mustChangePassword = !!res.body.mustChangePassword;
         applyLicence(res.body.licence, res.body.expiresAt || (Math.floor(Date.now()/1000) + (res.body.trialDays || 7) * 86400), res.body.ads);
         var kid = (kidI.value||"").trim();
         m.close();
@@ -10144,8 +10154,11 @@
           if(kid && !state.name) state.name = kid.slice(0,14);
           save();
           renderHome();
-          if(!state.setup) openProfile();
-          else if(licence && licence.limited) setTimeout(openKey, 700);
+          var next = function(){
+            if(!state.setup) openProfile();
+            else if(licence && licence.limited) setTimeout(openKey, 700);
+          };
+          if(mustChangePassword) openPassword({first:true, then:next}); else next();
           if(state.stars > 0) banner("Welcome back — ⭐ " + state.stars + " restored");
         });
         return true;
@@ -10747,14 +10760,18 @@
              since this browser last checked. */
           if(res.body.token){ setToken(res.body.token, rememberedHere()); }
           accountHasPassword = !!res.body.hasPassword;
+          mustChangePassword = !!res.body.mustChangePassword;
           applyLicence(res.body.licence, res.body.expiresAt, res.body.ads);
           if(res.body.trialEnded) setTimeout(function(){ banner("Your free trial has ended — unlock every game to keep playing."); }, 900);
           /* Draw only once the account's stars are in, or the home screen
              would show this device's total and then quietly change. */
           syncProgress(function(){
             renderHome();
-            if(!state.setup) openProfile();
-            else if(licence && licence.limited) setTimeout(openKey, 700);
+            var next = function(){
+              if(!state.setup) openProfile();
+              else if(licence && licence.limited) setTimeout(openKey, 700);
+            };
+            if(mustChangePassword) openPassword({first:true, then:next}); else next();
           });
         } else {
           clearToken();
