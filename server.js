@@ -1218,10 +1218,10 @@ async function handleMailTest(req, res) {
   let body;
   try { body = await readBody(req); } catch { return sendJson(req, res, 400, { ok: false, error: 'bad_request' }); }
   const cfg = mailConfig();
-  const shown = cfg ? { host: cfg.host, port: cfg.port, secure: cfg.secure, user: cfg.user, from: cfg.from, passwordSet: !!cfg.pass } : null;
+  const shown = cfg ? { transport: cfg.transport, host: cfg.host, port: cfg.port, secure: cfg.secure, user: cfg.user, from: cfg.from, keySet: !!cfg.pass } : null;
   if (!mailConfigured()) {
     return sendJson(req, res, 200, { ok: false, error: 'mail_not_configured', config: shown,
-      message: 'Email is not configured: set SMTP_HOST, SMTP_USER, SMTP_PASS (and SMTP_FROM) and restart.' });
+      message: 'Email is not configured: set BREVO_API_KEY and MAIL_FROM (or SMTP_HOST, SMTP_USER, SMTP_PASS, SMTP_FROM) and restart.' });
   }
   const to = String(body.to || '').trim().toLowerCase();
   if (!looksLikeEmail(to)) return sendJson(req, res, 400, { ok: false, error: 'email_invalid', message: 'That email address does not look right.' });
@@ -1752,7 +1752,7 @@ server.listen(PORT, () => {
   console.log(`  sample access: ${TRIAL_DAYS} days, registrations saved to ${REGISTRATIONS}`);
   console.log(`  access: ${settings.openAccess ? 'OPEN — everyone gets ' + settings.defaultTier : TRIAL_DAYS + '-day trial of everything, then the free games'}`);
   console.log(`  Google sign-in: ${GOOGLE_CLIENT_ID ? 'enabled' : 'off (set GOOGLE_CLIENT_ID)'}`);
-  console.log(`  emailed passwords: ${mailConfigured() ? 'enabled via ' + process.env.SMTP_HOST : 'off (set SMTP_HOST, SMTP_USER, SMTP_PASS) — people choose a password on sign-up'}`);
+  console.log(`  emailed passwords: ${mailConfigured() ? 'enabled via ' + mailConfig().transport + ' (' + mailConfig().host + ')' : 'off (set BREVO_API_KEY + MAIL_FROM, or SMTP_HOST/USER/PASS) — people choose a password on sign-up'}`);
   console.log(`  payments: ${paymentsEnabled() ? 'Stripe Checkout enabled' : 'off (set STRIPE_SECRET_KEY, STRIPE_WEBHOOK_SECRET, STRIPE_PRICE_ID)'}`);
   console.log(`  admin page: /admin (sign in as ${ADMIN_EMAILS.join(', ')})`);
 

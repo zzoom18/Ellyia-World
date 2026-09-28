@@ -67,3 +67,26 @@ test('a refused recipient is an error carrying the server reply', async () => {
     await assert.rejects(sendMail({ to: 'nobody@example.com', subject: 's', text: 't' }, f.env), /550 no such user/);
   } finally { f.server.close(); }
 });
+
+test('with an API key the message goes to Brevo over HTTPS, not SMTP', async () => {
+  const calls = [];
+  const fakeFetch = async (url, opts) => { calls.push({ url, opts }); return { ok: true, status: 201, json: async () => ({ messageId: 'x' }) }; };
+  const env = { BREVO_API_KEY: 'xkeysib-test', MAIL_FROM: 'Fun Game <hello@example.sg>', SMTP_HOST: 'ignored.example' };
+  assert.equal(mailConfig(env).transport, 'brevo-api');
+  assert.equal(mailConfigured(env), true);
+  await sendMail({ to: 'parent@example.com', subject: 'Hi', text: 'Body' }, env, { fetchImpl: fakeFetch });
+  assert.equal(calls.length, 1);
+  assert.equal(calls[0].url, 'https://api.brevo.com/v3/smtp/email');
+  assert.equal(calls[0].opts.headers['api-key'], 'xkeysib-test');
+  const body = JSON.parse(calls[0].opts.body);
+  assert.deepEqual(body.sender, { name: 'Fun Game', email: 'hello@example.sg' });
+  assert.deepEqual(body.to, [{ email: 'parent@example.com' }]);
+  assert.equal(body.textContent, 'Body');
+});
+
+test('a Brevo API refusal carries its message', async () => {
+  const fakeFetch = async () => ({ ok: false, status: 401, json: async () => ({ code: 'unauthorized', message: 'Key not found' }) });
+  await assert.rejects(
+    sendMail({ to: 'a@b.co', subject: 's', text: 't' }, { BREVO_API_KEY: 'bad', MAIL_FROM: 'a@b.co' }, { fetchImpl: fakeFetch }),
+    /brevo api: 401 Key not found/);
+});

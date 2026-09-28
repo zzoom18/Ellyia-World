@@ -203,7 +203,15 @@ live in `passwords.json` under `DATA_DIR`, keyed by a hash of the address, never
 password itself, next to the account's trial start. The **Clear password** button on the
 admin page drops a password without touching the trial clock.
 
-Email is sent over plain SMTP, no library. For a Hostinger mailbox:
+Email goes out one of two ways, no library either way. Hosts such as Railway block
+outbound SMTP ports, so on those use Brevo's HTTPS API:
+
+| Variable | Value |
+| --- | --- |
+| `BREVO_API_KEY` | from Brevo → SMTP & API → API Keys |
+| `MAIL_FROM` | a sender Brevo has verified, e.g. `Fun Game <you@example.com>` |
+
+Or plain SMTP, for example a Hostinger mailbox:
 
 | Variable | Value |
 | --- | --- |
@@ -212,6 +220,9 @@ Email is sent over plain SMTP, no library. For a Hostinger mailbox:
 | `SMTP_USER` | the mailbox, e.g. `hello@ellyia.sg` |
 | `SMTP_PASS` | its password |
 | `SMTP_FROM` | optional display form, e.g. `Fun Game <hello@ellyia.sg>` |
+
+The admin page has a **Send test email** button that shows the settings in use and the
+server's reply when a send fails.
 
 Precedence, highest first: **personal grant → open access → trial**.
 
