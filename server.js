@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 import { verify, issueToken, readToken, mint, tierByName, TIERS, SELLABLE_TIERS, TRIAL_TIER, LIMITED_TIER } from './lib/keys.js';
 import { verifyGoogleToken } from './lib/google.js';
 import { hashPassword, checkPassword, passwordProblem, generatePassword } from './lib/password.js';
-import { mailConfigured, sendMail } from './lib/mail.js';
+import { mailConfigured, mailConfig, sendMail } from './lib/mail.js';
 
 const ROOT = path.dirname(fileURLToPath(import.meta.url));
 const PUBLIC = path.join(ROOT, 'public');
@@ -1211,6 +1211,31 @@ async function handleAccount(req, res) {
   return sendJson(req, res, 400, { ok: false, error: 'unknown_action' });
 }
 
+/* Admin-only: send one test email and report the mail server's own words,
+   because the sign-up sheet deliberately tells a parent only "try again". */
+async function handleMailTest(req, res) {
+  if (!requireAdmin(req, res)) return;
+  let body;
+  try { body = await readBody(req); } catch { return sendJson(req, res, 400, { ok: false, error: 'bad_request' }); }
+  const cfg = mailConfig();
+  const shown = cfg ? { host: cfg.host, port: cfg.port, secure: cfg.secure, user: cfg.user, from: cfg.from, passwordSet: !!cfg.pass } : null;
+  if (!mailConfigured()) {
+    return sendJson(req, res, 200, { ok: false, error: 'mail_not_configured', config: shown,
+      message: 'Email is not configured: set SMTP_HOST, SMTP_USER, SMTP_PASS (and SMTP_FROM) and restart.' });
+  }
+  const to = String(body.to || '').trim().toLowerCase();
+  if (!looksLikeEmail(to)) return sendJson(req, res, 400, { ok: false, error: 'email_invalid', message: 'That email address does not look right.' });
+  try {
+    await sendMail({ to, subject: 'Fun Game test email', text: 'This is a test from the Fun Game admin page. If you can read this, sign-up emails will arrive too.' });
+    console.log(`[mail] test email sent to ${to}`);
+    return sendJson(req, res, 200, { ok: true, config: shown });
+  } catch (err) {
+    console.error('[mail] test email failed:', err.message);
+    return sendJson(req, res, 200, { ok: false, error: 'mail_failed', config: shown, detail: err.message,
+      message: 'The mail server refused the test. Its reply is below.' });
+  }
+}
+
 async function handleRegistrations(req, res) {
   if (!requireAdmin(req, res)) return;
   const rows = readRegistrations();
@@ -1627,7 +1652,9 @@ async function handleAdminLogin(req, res) {
     const stored = ADMIN_EMAILS.indexOf(email) >= 0 ? passwordOf(email) : null;
     if (ADMIN_EMAILS.indexOf(email) >= 0 && !stored) {
       return sendJson(req, res, 403, { ok: false, error: 'no_password',
-        message: 'This account has no password yet. Sign in to the game with it, open your profile and set one, then come back.' });
+        message: mailConfigured()
+          ? 'This account has no password yet. On the game\'s sign-in sheet choose "I\'m new here" with this email to have one emailed to you, then come back. Until then, use the admin token below.'
+          : 'This account has no password yet. Sign in to the game with it, open your profile and set one, then come back.' });
     }
     if (!stored || !checkPassword(password, stored)) {
       recordAttempt(ip);
@@ -1701,6 +1728,7 @@ const server = http.createServer(async (req, res) => {
     if (url.pathname === '/api/admin/registrations' && req.method === 'GET') return await handleRegistrations(req, res);
     if (url.pathname === '/api/admin/settings') return await handleSettings(req, res);
     if (url.pathname === '/api/admin/grant' && req.method === 'POST') return await handleGrant(req, res);
+    if (url.pathname === '/api/admin/mail/test' && req.method === 'POST') return await handleMailTest(req, res);
     if (url.pathname === '/api/admin/account' && req.method === 'POST') return await handleAccount(req, res);
     if (url.pathname === '/api/writing' && (req.method === 'GET' || req.method === 'POST')) return await handleWriting(req, res);
     if (url.pathname === '/api/writings/approved' && req.method === 'GET') return await handleWritingsApproved(req, res);

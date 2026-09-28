@@ -199,6 +199,20 @@
   </section>
 
   <section class="panel">
+    <h2>Email</h2>
+    <p class="note">Sign-ups get their password by email. Send yourself a test to see exactly what the mail server answers when something is wrong.</p>
+    <div class="row">
+      <div>
+        <label for="mailTo">Send a test to</label>
+        <input id="mailTo" type="email" placeholder="you@example.com" spellcheck="false">
+      </div>
+      <div class="fit"><button class="btn btn-go" id="mailGo">Send test email</button></div>
+    </div>
+    <div class="msg" id="mailMsg"></div>
+    <pre id="mailOut" class="note" style="white-space:pre-wrap; margin-top:10px" hidden></pre>
+  </section>
+
+  <section class="panel">
     <h2>Make licence keys</h2>
     <p class="note">Only needed when open access is off. Every key unlocks the whole app. Serial numbers must never repeat — keep note of where you stopped.</p>
     <div class="row">
@@ -547,6 +561,21 @@
       if(res.body.ok) paintWritings(res.body.writings || []);
     });
   }
+
+  $("mailGo").addEventListener("click", function(){
+    var to = ($("mailTo").value || "").trim();
+    if(!to){ say($("mailMsg"), "Type an address to send the test to.", false); return; }
+    $("mailGo").disabled = true; $("mailOut").hidden = true;
+    api("/api/admin/mail/test", {method:"POST", body:{to:to}}).then(function(res){
+      var b = res.body || {};
+      say($("mailMsg"), b.ok ? "Sent — check " + to + " (and spam)." : (b.message || "The test did not go through."), !!b.ok);
+      var lines = [];
+      if(b.config) lines.push("Settings: " + JSON.stringify(b.config));
+      if(b.detail) lines.push("Server said: " + b.detail);
+      if(lines.length){ $("mailOut").textContent = lines.join("\n"); $("mailOut").hidden = false; }
+    })["catch"](function(){ say($("mailMsg"), "Could not reach the server.", false); })
+      .then(function(){ $("mailGo").disabled = false; });
+  });
 
   $("grantGo").addEventListener("click", function(){
     var em = ($("gEmail").value || "").trim();
